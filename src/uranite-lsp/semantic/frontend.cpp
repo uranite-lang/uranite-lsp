@@ -1,3 +1,4 @@
+
 //
 // @author hxAri (hxari)
 // @create 2026-11-22 00:00
@@ -15,8 +16,6 @@
 // You should have received a copy of the GNU General Public License
 // along with this program. If not, see <https://www.gnu.org/licenses/>.
 //
-
-#include "uranite-lsp/semantic/frontend.hpp"
 
 #include <filesystem>
 #include <memory>
@@ -44,6 +43,7 @@
 #include "uranite/token/token.hpp"
 #include "uranite/visitors/printer.hpp"
 
+#include "uranite-lsp/semantic/frontend.hpp"
 #include "uranite-lsp/semantic/overlay-store.hpp"
 #include "uranite-lsp/semantic/source-provider.hpp"
 #include "uranite-lsp/text/uri.hpp"
@@ -58,7 +58,7 @@ namespace uranite::lsp::semantic {
 	FrontendResult Frontend::analyze( const std::string& uri, const std::string& source,
 	                                  const CompletionRequest& completion ) {
 		FrontendResult result;
-		diagnostic::Engine engine( 0, 0 );
+		diagnostic::Engine engine( 100, 100 );
 		engine.setConsolPrintable( false );
 		result.clientUri = uri;
 		const std::string rawPath = text::uriToPath( uri );
@@ -106,6 +106,8 @@ namespace uranite::lsp::semantic {
 		auto provider = std::make_shared<LspSourceProvider>( this->overlayStore );
 		driver.setSourceProvider( provider );
 
+		driver.diagnosticEngine().setMaxErrors( 100 );
+
 		size_t userDeclCount = programRoot->declarations.size();
 		driver.loadPrelude( *programRoot );
 		driver.resolveImports( *programRoot );
@@ -113,7 +115,12 @@ namespace uranite::lsp::semantic {
 		result.moduleSymbols = driver.accumulatedModuleSymbols();
 		result.moduleTypes = driver.accumulatedModuleTypes();
 
-		auto buildIndex = [ &result ]() {
+		// Surface the driver's import/module diagnostics through the LSP engine.
+		for( const auto& diagnostic : driver.diagnosticEngine().diagnostics() ) {
+			engine.emit( diagnostic.level, diagnostic.source, diagnostic.messages, diagnostic.hinting );
+		}
+
+		auto buildIndex = [ &result, &source ]() {
 			if( result.program == nullptr || result.analyzer == nullptr ) return;
 			for( const auto& entry : result.analyzer->getRegisteredTypes() ) {
 				if( entry.second == nullptr ) continue;
@@ -123,7 +130,7 @@ namespace uranite::lsp::semantic {
 			}
 			result.symbolIndex = std::make_shared<SymbolIndex>();
 			result.symbolIndex->index( *result.program, result.moduleSymbols, result.moduleTypes,
-				result.analyzer->globalScope() );
+				result.analyzer->globalScope(), source, result.canonicalPath );
 		};
 
 		// Semantic analyzer
