@@ -1,3 +1,4 @@
+
 //
 // @author hxAri (hxari)
 // @create 2026-11-22 00:00
@@ -16,12 +17,67 @@
 // along with this program. If not, see <https://www.gnu.org/licenses/>.
 //
 
-#include "uranite-lsp/text/document.hpp"
-
 #include <string>
 #include <vector>
 
+#include "uranite-lsp/text/document.hpp"
+
 namespace uranite::lsp::text {
+
+	bool looksParseable( const std::string& text ) {
+		int parens = 0;
+		int brackets = 0;
+		int braces = 0;
+		std::size_t i = 0;
+		while( i < text.size() ) {
+			const char c = text[ i ];
+			if( c == '#' ) {
+				if( text.compare( i, 2, "#{" ) == 0 ) {
+					const std::size_t close = text.find( "}#", i + 2 );
+					if( close == std::string::npos ) return true;
+					i = close + 2;
+					continue;
+				}
+				while( i < text.size() && text[ i ] != '\n' ) i++;
+				continue;
+			}
+			if( c == '"' ) {
+				if( text.compare( i, 3, "\"\"\"" ) == 0 ) {
+					const std::size_t close = text.find( "\"\"\"", i + 3 );
+					if( close == std::string::npos ) return true;
+					i = close + 3;
+					continue;
+				}
+				i++;
+				while( i < text.size() ) {
+					if( text[ i ] == '\\' ) { i += 2; continue; }
+					if( text[ i ] == '"' ) { i++; break; }
+					if( text[ i ] == '\n' ) return false;
+					i++;
+				}
+				continue;
+			}
+			if( c == '\'' ) {
+				i++;
+				while( i < text.size() ) {
+					if( text[ i ] == '\\' ) { i += 2; continue; }
+					if( text[ i ] == '\'' ) { i++; break; }
+					if( text[ i ] == '\n' ) return false;
+					i++;
+				}
+				continue;
+			}
+			if( c == '(' ) parens++;
+			else if( c == ')' ) parens--;
+			else if( c == '[' ) brackets++;
+			else if( c == ']' ) brackets--;
+			else if( c == '{' ) braces++;
+			else if( c == '}' ) braces--;
+			if( parens < 0 || brackets < 0 || braces < 0 ) return false;
+			i++;
+		}
+		return parens == 0 && brackets == 0 && braces == 0;
+	}
 
 	Document::Document() : documentUri( "" ), content( "" ), documentVersion( 0 ) {
 	}
