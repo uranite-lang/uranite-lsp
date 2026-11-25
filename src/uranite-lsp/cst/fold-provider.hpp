@@ -1,3 +1,4 @@
+
 //
 // @author hxAri (hxari)
 // @create 2026-11-22 00:00
@@ -19,10 +20,9 @@
 #ifndef _URANITE_LSP_CST_FOLD_PROVIDER_HPP_
 #define _URANITE_LSP_CST_FOLD_PROVIDER_HPP_
 
-#include <vector>
-
 #include <llvm/Support/JSON.h>
 #include <tree_sitter/api.h>
+#include <vector>
 
 #include "uranite-lsp/cst/query-set.hpp"
 
