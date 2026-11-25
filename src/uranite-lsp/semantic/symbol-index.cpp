@@ -1,3 +1,4 @@
+
 //
 // @author hxAri (hxari)
 // @create 2026-11-22 00:00
@@ -16,8 +17,6 @@
 // along with this program. If not, see <https://www.gnu.org/licenses/>.
 //
 
-#include "uranite-lsp/semantic/symbol-index.hpp"
-
 #include <algorithm>
 #include <set>
 #include <string>
@@ -29,6 +28,8 @@
 #include "uranite/semantic/scope.hpp"
 #include "uranite/semantic/symbol.hpp"
 #include "uranite/semantic/typeref.hpp"
+
+#include "uranite-lsp/semantic/symbol-index.hpp"
 
 namespace uranite::lsp::semantic {
 
@@ -209,8 +210,10 @@ namespace uranite::lsp::semantic {
 			public:
 				NodeWalker( SymbolIndex& index, std::set<const Symbol*>& seenDefinitions,
 				            const std::unordered_map<std::string, TypeSharedPointer>& moduleTypes,
-				            const std::unordered_map<std::string, SymbolSharedPointer>& typeSymbols )
-					: index( index ), seenDefinitions( seenDefinitions ), moduleTypes( moduleTypes ), typeSymbols( typeSymbols ) {
+				            const std::unordered_map<std::string, SymbolSharedPointer>& typeSymbols,
+				            const std::string& sourceText )
+					: index( index ), seenDefinitions( seenDefinitions ), moduleTypes( moduleTypes ),
+					  typeSymbols( typeSymbols ), sourceText( sourceText ) {
 				}
 
 				void walk( const Program& program ) {
@@ -223,6 +226,7 @@ namespace uranite::lsp::semantic {
 				std::set<std::string> seenTypeDefinitions;
 				const std::unordered_map<std::string, TypeSharedPointer>& moduleTypes;
 				const std::unordered_map<std::string, SymbolSharedPointer>& typeSymbols;
+				const std::string& sourceText;
 				std::vector<uint32_t> argumentLines;
 				std::vector<uint32_t> argumentCols;
 
@@ -367,6 +371,88 @@ namespace uranite::lsp::semantic {
 					this->index.addDefinition( definition );
 				}
 
+				/**
+				 * @brief Indexes a resolved member usage at its exact member token.
+				 *        Compiler-created member symbols carry the usage site as
+				 *        their source, so only a reference is recorded here; the
+				 *        matching declaration definition comes from the class walk.
+				 *        The receiver's class name is kept in the container field
+				 *        so go-to-definition prefers the declaring class.
+				 */
+				void collectMemberReference( const SymbolSharedPointer& symbol, const std::string& name,
+				                             const SourceSharedPointer& source, const std::string& receiverClass ) {
+					if( symbol == nullptr || source == nullptr ) return;
+					IndexedSymbol reference;
+					reference.name = name;
+					reference.qualifiedName = makeQualified( symbol->sourceModule, "", symbol->name );
+					reference.kind = symbol->kind;
+					reference.symbol = symbol;
+					reference.type = symbol->typeref;
+					reference.container = receiverClass;
+					reference.isDefinition = false;
+					toLsp( source, reference.line, reference.col, reference.endLine, reference.endCol,
+						reference.pathname, name.size() );
+					this->index.addReference( reference );
+				}
+
+				/**
+				 * @brief Registers a field or method declaration under its bare
+				 *        name so member go-to-definition, references and rename
+				 *        resolve across the workspace. The declaration range is
+				 *        snapped onto the exact name token inside its line.
+				 */
+				void collectMemberDeclaration( const std::string& name, const SourceSharedPointer& source,
+				                               Symbol::Kind kind, const std::string& className ) {
+					if( name.empty() == true || source == nullptr ) return;
+					IndexedSymbol definition;
+					definition.name = name;
+					definition.qualifiedName = name;
+					definition.kind = kind;
+					definition.container = className;
+					definition.isDefinition = true;
+					toLsp( source, definition.line, definition.col, definition.endLine, definition.endCol,
+						definition.pathname, name.size() );
+					if( this->sourceText.empty() == false ) {
+						std::string lineText;
+						bool lineFound = false;
+						uint32_t currentLine = 0;
+						std::size_t lineStart = 0;
+						for( std::size_t i = 0; i <= this->sourceText.size(); i++ ) {
+							if( i == this->sourceText.size() || this->sourceText[ i ] == '\n' ) {
+								if( currentLine == definition.line ) {
+									lineText = this->sourceText.substr( lineStart, i - lineStart );
+									lineFound = true;
+									break;
+								}
+								currentLine++;
+								lineStart = i + 1;
+							}
+						}
+						// The declaration may live in an injected module AST whose
+						// coordinates refer to another file; only snap when the
+						// line actually belongs to the indexed document.
+						if( lineFound == true ) {
+							std::size_t position = definition.col;
+							while( position < lineText.size() &&
+							       ( lineText[ position ] == ' ' || lineText[ position ] == '\t' ) ) {
+								position++;
+							}
+							if( position <= lineText.size() && lineText.compare( position, name.size(), name ) == 0 ) {
+								definition.col = static_cast<uint32_t>( position );
+								definition.endLine = definition.line;
+								definition.endCol = definition.col + static_cast<uint32_t>( name.size() );
+							}
+						}
+					}
+					this->index.addDefinition( definition );
+				}
+
+				/** @brief Best-effort receiver class name for member preference. */
+				std::string receiverClassName( const uranite::ast::nodes::ExpressionSharedPointer& object ) {
+					if( object == nullptr || object->semanticType == nullptr ) return "";
+					return object->semanticType->name;
+				}
+
 				void collectIdentifier( const uranite::ast::nodes::Expression& node, const std::string& name ) {
 					this->collectSymbol( node.resolvedSymbol, name, node.source,
 						node.semanticType != nullptr ? node.semanticType : ( node.resolvedSymbol != nullptr ? node.resolvedSymbol->typeref : nullptr ) );
@@ -495,6 +581,18 @@ namespace uranite::lsp::semantic {
 					this->walkVector( node.genericParameters );
 					this->walkOptional( node.baseClassType );
 					this->walkVector( node.interfaces );
+					for( const ast::nodes::FieldDeclarationSharedPointer& field : node.fields ) {
+						if( field != nullptr ) {
+							this->collectMemberDeclaration( field->name, field->source, Symbol::Kind::Field, node.name );
+						}
+					}
+					for( const ast::nodes::DeclarationSharedPointer& method : node.methods ) {
+						if( method != nullptr ) {
+							const ast::nodes::FunctionDeclaration& function =
+								static_cast<const ast::nodes::FunctionDeclaration&>( *method );
+							this->collectMemberDeclaration( function.name, function.source, Symbol::Kind::Function, node.name );
+						}
+					}
 					this->walkVector( node.fields );
 					this->walkVector( node.methods );
 					this->walkVector( node.nestedDeclarations );
@@ -542,6 +640,13 @@ namespace uranite::lsp::semantic {
 					this->collectTypeDeclaration( node.name, node.source );
 					this->walkVector( node.genericParameters );
 					this->walkVector( node.parentInterfaces );
+					for( const ast::nodes::DeclarationSharedPointer& method : node.methods ) {
+						if( method != nullptr ) {
+							const ast::nodes::FunctionDeclaration& function =
+								static_cast<const ast::nodes::FunctionDeclaration&>( *method );
+							this->collectMemberDeclaration( function.name, function.source, Symbol::Kind::Function, node.name );
+						}
+					}
 					this->walkVector( node.methods );
 					this->walkVector( node.nestedDeclarations );
 				}
@@ -549,6 +654,18 @@ namespace uranite::lsp::semantic {
 				void walkStruct( const StructDeclaration& node ) {
 					this->collectTypeDeclaration( node.name, node.source );
 					this->walkVector( node.genericParameters );
+					for( const ast::nodes::FieldDeclarationSharedPointer& field : node.fields ) {
+						if( field != nullptr ) {
+							this->collectMemberDeclaration( field->name, field->source, Symbol::Kind::Field, node.name );
+						}
+					}
+					for( const ast::nodes::DeclarationSharedPointer& method : node.methods ) {
+						if( method != nullptr ) {
+							const ast::nodes::FunctionDeclaration& function =
+								static_cast<const ast::nodes::FunctionDeclaration&>( *method );
+							this->collectMemberDeclaration( function.name, function.source, Symbol::Kind::Function, node.name );
+						}
+					}
 					this->walkVector( node.fields );
 					this->walkVector( node.methods );
 					this->walkVector( node.nestedDeclarations );
@@ -557,6 +674,18 @@ namespace uranite::lsp::semantic {
 				void walkTrait( const TraitDeclaration& node ) {
 					this->collectTypeDeclaration( node.name, node.source );
 					this->walkVector( node.genericParameters );
+					for( const ast::nodes::FieldDeclarationSharedPointer& field : node.fields ) {
+						if( field != nullptr ) {
+							this->collectMemberDeclaration( field->name, field->source, Symbol::Kind::Field, node.name );
+						}
+					}
+					for( const ast::nodes::DeclarationSharedPointer& method : node.methods ) {
+						if( method != nullptr ) {
+							const ast::nodes::FunctionDeclaration& function =
+								static_cast<const ast::nodes::FunctionDeclaration&>( *method );
+							this->collectMemberDeclaration( function.name, function.source, Symbol::Kind::Function, node.name );
+						}
+					}
 					this->walkVector( node.fields );
 					this->walkVector( node.methods );
 				}
@@ -780,12 +909,26 @@ namespace uranite::lsp::semantic {
 				}
 
 				void walkMemberAccess( const MemberAccessExpression& node ) {
-					this->collectIdentifier( node, node.member );
+					// Exact member token span plus the compiler-resolved member
+					// symbol so hover/definition/references/rename hit the member.
+					if( node.resolvedMemberSymbol != nullptr && node.memberSource != nullptr ) {
+						this->collectMemberReference( node.resolvedMemberSymbol, node.member, node.memberSource,
+							this->receiverClassName( node.object ) );
+					}
+					else {
+						this->collectIdentifier( node, node.member );
+					}
 					this->walkOptional( node.object );
 				}
 
 				void walkMethodCall( const MethodCallExpression& node ) {
-					this->collectIdentifier( node, node.method );
+					if( node.resolvedMemberSymbol != nullptr && node.memberSource != nullptr ) {
+						this->collectMemberReference( node.resolvedMemberSymbol, node.method, node.memberSource,
+							this->receiverClassName( node.object ) );
+					}
+					else {
+						this->collectIdentifier( node, node.method );
+					}
 					this->walkOptional( node.object );
 					this->walkVector( node.typeArguments );
 					this->argumentLines.clear();
@@ -933,12 +1076,15 @@ namespace uranite::lsp::semantic {
 	void SymbolIndex::index( const Program& program,
 	                         const std::unordered_map<std::string, std::vector<SymbolSharedPointer>>& accumulatedSymbols,
 	                         const std::unordered_map<std::string, TypeSharedPointer>& accumulatedTypes,
-	                         const ScopeSharedPointer& globalScope ) {
+	                         const ScopeSharedPointer& globalScope,
+	                         const std::string& sourceText,
+	                         const std::string& documentPath ) {
 		this->defs.clear();
 		this->refs.clear();
 		this->callSites.clear();
 		this->definitionsByName.clear();
 		this->referencesByName.clear();
+		this->documentPath = documentPath;
 
 		std::set<const Symbol*> seen;
 
@@ -997,7 +1143,7 @@ namespace uranite::lsp::semantic {
 			}
 		}
 
-		NodeWalker walker( *this, seen, accumulatedTypes, typeSymbols );
+		NodeWalker walker( *this, seen, accumulatedTypes, typeSymbols, sourceText );
 		walker.walk( program );
 	}
 
@@ -1005,6 +1151,9 @@ namespace uranite::lsp::semantic {
 		const IndexedSymbol* best = nullptr;
 		uint64_t bestSpan = 0;
 		for( const IndexedSymbol& symbol : this->defs ) {
+			// Injected module ASTs carry foreign-file coordinates that collide
+			// by line number; position lookups stay scoped to this document.
+			if( this->documentPath.empty() == false && symbol.pathname != this->documentPath ) continue;
 			if( contains( line, col, symbol.line, symbol.col, symbol.endLine, symbol.endCol ) == false ) continue;
 			const uint64_t current = span( symbol.line, symbol.col, symbol.endLine, symbol.endCol );
 			if( best == nullptr || current < bestSpan ) {
@@ -1013,6 +1162,7 @@ namespace uranite::lsp::semantic {
 			}
 		}
 		for( const IndexedSymbol& symbol : this->refs ) {
+			if( this->documentPath.empty() == false && symbol.pathname != this->documentPath ) continue;
 			if( contains( line, col, symbol.line, symbol.col, symbol.endLine, symbol.endCol ) == false ) continue;
 			const uint64_t current = span( symbol.line, symbol.col, symbol.endLine, symbol.endCol );
 			if( best == nullptr || current < bestSpan ) {
@@ -1027,6 +1177,7 @@ namespace uranite::lsp::semantic {
 		const IndexedCall* best = nullptr;
 		uint64_t bestSpan = 0;
 		for( const IndexedCall& call : this->callSites ) {
+			if( this->documentPath.empty() == false && call.pathname != this->documentPath ) continue;
 			if( contains( line, col, call.line, call.col, call.endLine, call.endCol ) == false ) continue;
 			const uint64_t current = span( call.line, call.col, call.endLine, call.endCol );
 			if( best == nullptr || current < bestSpan ) {
