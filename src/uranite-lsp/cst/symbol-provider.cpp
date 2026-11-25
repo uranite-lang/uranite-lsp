@@ -1,3 +1,4 @@
+
 //
 // @author hxAri (hxari)
 // @create 2026-11-22 00:00
@@ -16,18 +17,17 @@
 // along with this program. If not, see <https://www.gnu.org/licenses/>.
 //
 
-#include "uranite-lsp/cst/symbol-provider.hpp"
-
 #include <algorithm>
 #include <cstddef>
 #include <limits>
+#include <llvm/Support/JSON.h>
 #include <set>
 #include <string>
+#include <tree_sitter/api.h>
 #include <tuple>
 #include <vector>
 
-#include <llvm/Support/JSON.h>
-#include <tree_sitter/api.h>
+#include "uranite-lsp/cst/symbol-provider.hpp"
 
 namespace uranite::lsp::cst {
 
