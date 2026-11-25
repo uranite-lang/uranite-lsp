@@ -1,3 +1,4 @@
+
 //
 // @author hxAri (hxari)
 // @create 2026-11-22 00:00
@@ -16,8 +17,6 @@
 // along with this program. If not, see <https://www.gnu.org/licenses/>.
 //
 
-#include "uranite-lsp/workspace/analysis-scheduler.hpp"
-
 #include <algorithm>
 #include <atomic>
 #include <chrono>
@@ -28,6 +27,8 @@
 #include <mutex>
 #include <string>
 #include <thread>
+
+#include "uranite-lsp/workspace/analysis-scheduler.hpp"
 
 namespace uranite::lsp::workspace {
 
