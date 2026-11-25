@@ -1,3 +1,4 @@
+
 //
 // @author hxAri (hxari)
 // @create 2026-11-23 00:00
@@ -34,6 +35,7 @@ namespace uranite::lsp::cst {
 		Keyword,
 		CallArgument,
 		StructInit,
+		AsmBlock,
 	};
 
 	struct CompletionContext {
@@ -41,6 +43,8 @@ namespace uranite::lsp::cst {
 		std::string prefix;
 		bool afterDot = false;
 		bool afterDoubleColon = false;
+		// Module path extracted for import contexts (single or multi-line).
+		std::string modulePath;
 	};
 
 	class SyntacticIndex {
