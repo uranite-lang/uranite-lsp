@@ -1,3 +1,4 @@
+
 //
 // @author hxAri (hxari)
 // @create 2026-11-22 00:00
@@ -16,16 +17,15 @@
 // along with this program. If not, see <https://www.gnu.org/licenses/>.
 //
 
-#include "uranite-lsp/jsonrpc/message.hpp"
-
 #include <algorithm>
 #include <cctype>
 #include <cstdio>
+#include <llvm/Support/JSON.h>
+#include <llvm/Support/raw_ostream.h>
 #include <mutex>
 #include <string>
 
-#include <llvm/Support/JSON.h>
-#include <llvm/Support/raw_ostream.h>
+#include "uranite-lsp/jsonrpc/message.hpp"
 
 namespace uranite::lsp::jsonrpc {
 
