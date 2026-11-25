@@ -1,3 +1,4 @@
+
 //
 // @author hxAri (hxari)
 // @create 2026-11-22 00:00
@@ -16,20 +17,16 @@
 // along with this program. If not, see <https://www.gnu.org/licenses/>.
 //
 
-#include "uranite-lsp/server/server.hpp"
-
 #include <algorithm>
 #include <cstdlib>
 #include <filesystem>
-#include <sstream>
-#include <string>
-#include <vector>
-
-#include <tree_sitter/api.h>
-
 #include <fmt/format.h>
 #include <llvm/Support/JSON.h>
 #include <llvm/Support/raw_ostream.h>
+#include <sstream>
+#include <string>
+#include <tree_sitter/api.h>
+#include <vector>
 
 #include "uranite/diagnostic/diagnostic.hpp"
 
@@ -43,6 +40,7 @@
 #include "uranite-lsp/jsonrpc/message.hpp"
 #include "uranite-lsp/protocol/convert.hpp"
 #include "uranite-lsp/semantic/query-service.hpp"
+#include "uranite-lsp/server/server.hpp"
 #include "uranite-lsp/text/document.hpp"
 #include "uranite-lsp/text/position.hpp"
 #include "uranite-lsp/text/uri.hpp"
@@ -140,6 +138,36 @@ namespace uranite::lsp::server {
 			return true;
 		}
 
+		std::string applyRangeEdit( const std::string& text, const llvm::json::Object& range, const std::string& newText,
+		                            text::PositionEncoding encoding ) {
+			const llvm::json::Object* start = range.getObject( "start" );
+			const llvm::json::Object* end = range.getObject( "end" );
+			if( start == nullptr || end == nullptr ) return text;
+			const int64_t startLine = std::max<int64_t>( 0, start->getInteger( "line" ).value_or( 0 ) );
+			const int64_t startCharacter = std::max<int64_t>( 0, start->getInteger( "character" ).value_or( 0 ) );
+			const int64_t endLine = std::max<int64_t>( 0, end->getInteger( "line" ).value_or( 0 ) );
+			const int64_t endCharacter = std::max<int64_t>( 0, end->getInteger( "character" ).value_or( 0 ) );
+
+			std::vector<std::size_t> lineStarts;
+			lineStarts.push_back( 0 );
+			for( std::size_t i = 0; i < text.size(); i++ ) {
+				if( text[ i ] == '\n' ) lineStarts.push_back( i + 1 );
+			}
+			auto offsetOf = [ & ]( int64_t line, int64_t character ) -> std::size_t {
+				if( static_cast<std::size_t>( line ) >= lineStarts.size() ) return text.size();
+				const std::size_t lineStart = lineStarts[ static_cast<std::size_t>( line ) ];
+				std::size_t lineEnd = lineStart;
+				while( lineEnd < text.size() && text[ lineEnd ] != '\n' ) lineEnd++;
+				const std::string lineText = text.substr( lineStart, lineEnd - lineStart );
+				const uint32_t byteOffset = text::toByteOffset( lineText, static_cast<uint32_t>( character ), encoding );
+				return lineStart + std::min<std::size_t>( byteOffset, lineText.size() );
+			};
+			const std::size_t startOffset = offsetOf( startLine, startCharacter );
+			const std::size_t endOffset = offsetOf( endLine, endCharacter );
+			if( startOffset > endOffset || startOffset > text.size() ) return text;
+			return text.substr( 0, startOffset ) + newText + text.substr( std::min( endOffset, text.size() ) );
+		}
+
 	} // namespace
 
 	static std::string requestUri( const llvm::json::Value& params ) {
@@ -201,7 +229,8 @@ namespace uranite::lsp::server {
 	int Server::run() {
 		while( this->readAndDispatch( false ) ) {
 		}
-		return 0;
+		// LSP exit code: zero only when shutdown was received before exit.
+		return this->shutdownRequested ? 0 : 1;
 	}
 
 	bool Server::step() {
@@ -238,8 +267,32 @@ namespace uranite::lsp::server {
 	void Server::analyzeAndPublish( const std::string& uri, const std::string& text, uint64_t generation ) {
 		if( this->scheduler.currentGeneration( uri ) != generation ) return;
 
+
+		// The compiler parser is not hardened against unbalanced delimiters;
+		// mid-typing buffers must never reach Frontend::analyze.
+		if( text::looksParseable( text ) == false ) {
+			llvm::json::Array diagnostics;
+			llvm::json::Object params;
+			params[ "uri" ] = uri;
+			params[ "diagnostics" ] = std::move( diagnostics );
+			jsonrpc::writeNotification( this->output, "textDocument/publishDiagnostics",
+				llvm::json::Value( std::move( params ) ) );
+			return;
+		}
+
 		semantic::Frontend frontend( this->overlayStore, this->moduleGraph, this->modulesPath );
-		semantic::FrontendResult result = frontend.analyze( uri, text );
+		semantic::FrontendResult result;
+		try {
+			result = frontend.analyze( uri, text );
+		}
+		catch( const std::bad_alloc& ) {
+			// The compiler exploded on pathological input; keep any prior
+			// analysis result and skip publishing for this generation.
+			return;
+		}
+		catch( const std::exception& e ) {
+			return;
+		}
 		{
 			std::lock_guard<std::mutex> lock( this->resultsMutex );
 			this->analysisResults[ uri ] = std::make_shared<semantic::FrontendResult>( std::move( result ) );
@@ -251,6 +304,7 @@ namespace uranite::lsp::server {
 			std::lock_guard<std::mutex> lock( this->resultsMutex );
 			current = this->analysisResults[ uri ];
 		}
+
 
 		llvm::json::Array diagnostics;
 		for( const auto& item : current->diagnostics.diagnostics() ) {
@@ -283,6 +337,18 @@ namespace uranite::lsp::server {
 	}
 
 	void Server::handle( const jsonrpc::Message& msg ) {
+		// LSP shutdown semantics: once shutdown is received, every further
+		// non-exit request is rejected with InvalidRequest and notifications
+		// are dropped.
+		if( this->shutdownRequested == true && msg.method != "exit" ) {
+			if( msg.id.has_value() ) {
+				jsonrpc::writeError( this->output, *msg.id,
+					static_cast<int>( jsonrpc::ErrorCode::InvalidRequest ),
+					"Server is shutting down" );
+			}
+			return;
+		}
+
 		if( msg.method == "initialize" ) {
 			// Position encoding negotiation (LSP 3.17).
 			this->positionEncoding = "utf-16";
@@ -309,7 +375,7 @@ namespace uranite::lsp::server {
 			llvm::json::Object caps;
 			llvm::json::Object textSync;
 			textSync[ "openClose" ] = true;
-			textSync[ "change" ] = 1; // Full
+			textSync[ "change" ] = 2; // Incremental (range-based change events supported)
 			textSync[ "save" ] = true;
 			caps[ "textDocumentSync" ] = std::move( textSync );
 			caps[ "hoverProvider" ] = true;
@@ -349,7 +415,8 @@ namespace uranite::lsp::server {
 				jsonrpc::writeResponse( this->output, *msg.id, llvm::json::Value( std::move( result ) ) );
 			}
 
-			// Module graph root from client.
+			// Module graph root from client: workspaceFolders take precedence,
+			// then rootUri, then rootPath (G1: VS Code sends workspaceFolders).
 			if( msg.params.getAsObject() != nullptr ) {
 				const llvm::json::Object* params = msg.params.getAsObject();
 				const llvm::json::Object* initOptions = params->getObject( "initializationOptions" );
@@ -359,14 +426,28 @@ namespace uranite::lsp::server {
 						this->moduleGraph->setModulesPathOverride( modulesPath->str() );
 					}
 				}
-				const auto rootUri = params->getString( "rootUri" );
-				if( rootUri.has_value() && rootUri->empty() == false ) {
-					this->moduleGraph->setWorkspaceRoot( text::uriToPath( rootUri->str() ) );
+				bool rootResolved = false;
+				const llvm::json::Array* workspaceFolders = params->getArray( "workspaceFolders" );
+				if( workspaceFolders != nullptr && workspaceFolders->empty() == false ) {
+					const llvm::json::Object* primaryFolder = ( *workspaceFolders )[ 0 ].getAsObject();
+					if( primaryFolder != nullptr ) {
+						const auto folderUri = primaryFolder->getString( "uri" );
+						if( folderUri.has_value() && folderUri->empty() == false ) {
+							this->moduleGraph->setWorkspaceRoot( text::uriToPath( folderUri->str() ) );
+							rootResolved = true;
+						}
+					}
 				}
-				else {
-					const auto rootPath = params->getString( "rootPath" );
-					if( rootPath.has_value() && rootPath->empty() == false ) {
-						this->moduleGraph->setWorkspaceRoot( rootPath->str() );
+				if( rootResolved == false ) {
+					const auto rootUri = params->getString( "rootUri" );
+					if( rootUri.has_value() && rootUri->empty() == false ) {
+						this->moduleGraph->setWorkspaceRoot( text::uriToPath( rootUri->str() ) );
+					}
+					else {
+						const auto rootPath = params->getString( "rootPath" );
+						if( rootPath.has_value() && rootPath->empty() == false ) {
+							this->moduleGraph->setWorkspaceRoot( rootPath->str() );
+						}
 					}
 				}
 			}
@@ -420,14 +501,24 @@ namespace uranite::lsp::server {
 					version = static_cast<int>( document->getInteger( "version" ).value_or( 0 ) );
 				}
 				const llvm::json::Array* changes = params->getArray( "contentChanges" );
-				if( changes != nullptr && changes->empty() == false ) {
-					const llvm::json::Object* change = ( *changes )[ changes->size() - 1 ].getAsObject();
-					if( change != nullptr ) {
-						const std::string text = change->getString( "text" ).value_or( "" ).str();
-						this->documents.change( uri, text, version );
-						this->overlayStore->put( text::uriToPath( uri ), text );
-						this->runAnalysis( uri );
+				if( changes != nullptr && changes->empty() == false && uri.empty() == false ) {
+					// G2: honor both full-text and range-based incremental change events.
+					std::string text = documentTextFor( this->documents, uri );
+					for( const llvm::json::Value& value : *changes ) {
+						const llvm::json::Object* change = value.getAsObject();
+						if( change == nullptr ) continue;
+						const std::string changeText = change->getString( "text" ).value_or( "" ).str();
+						const llvm::json::Object* range = change->getObject( "range" );
+						if( range == nullptr ) {
+							// Full-document replacement.
+							text = changeText;
+							continue;
+						}
+						text = applyRangeEdit( text, *range, changeText, toEncoding( this->positionEncoding ) );
 					}
+					this->documents.change( uri, text, version );
+					this->overlayStore->put( text::uriToPath( uri ), text );
+					this->runAnalysis( uri );
 				}
 			}
 			return;
@@ -652,7 +743,19 @@ namespace uranite::lsp::server {
 								if( moduleImported ) {
 									std::string newLine = moduleImportText;
 									while( newLine.empty() == false && ( newLine.back() == '\r' || newLine.back() == ' ' || newLine.back() == '\t' ) ) newLine.pop_back();
-									if( newLine.find( symbol ) == std::string::npos ) newLine += ", " + symbol;
+									if( newLine.find( symbol ) == std::string::npos ) {
+										// G4: brace-list imports merge before the closing brace.
+										const std::size_t importKeyword = newLine.find( " import " );
+										const std::size_t closeBrace = newLine.rfind( '}' );
+										if( importKeyword != std::string::npos && closeBrace != std::string::npos &&
+										    closeBrace > importKeyword &&
+										    newLine.compare( importKeyword + 8, 1, "{" ) == 0 ) {
+											newLine = newLine.substr( 0, closeBrace ) + ", " + symbol + newLine.substr( closeBrace );
+										}
+										else {
+											newLine += ", " + symbol;
+										}
+									}
 									edits.push_back( llvm::json::Object{
 										{ "range", llvm::json::Object{
 											{ "start", llvm::json::Object{ { "line", moduleImportLine }, { "character", 0 } } },
@@ -699,7 +802,19 @@ namespace uranite::lsp::server {
 			uint32_t line = 0;
 			uint32_t col = 0;
 			if( requestPosition( msg.params, uri, line, col, toEncoding( this->positionEncoding ), this->documents ) ) {
-				const std::shared_ptr<semantic::QueryService> service = this->queryServiceFor( uri );
+				std::shared_ptr<semantic::QueryService> service = this->queryServiceFor( uri );
+				if( service == nullptr ) {
+					// Mid-typing buffers whose parse failed still deserve import,
+					// keyword and auto-import completions: answer through a
+					// lightweight service that never touches the symbol index.
+					std::string text;
+					const workspace::DocumentEntry* entry = this->documents.get( uri );
+					if( entry != nullptr ) text = entry->document.text();
+					if( text.empty() == false ) {
+						service = std::make_shared<semantic::QueryService>( nullptr, nullptr, this->overlayStore,
+							this->modulesPath, uri, text, this->moduleGraph );
+					}
+				}
 				if( service != nullptr ) {
 					for( const semantic::QueryCompletion& item : service->completion( line, col ) ) {
 						if( item.valid == false ) continue;
