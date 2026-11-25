@@ -1,3 +1,4 @@
+
 //
 // @author hxAri (hxari)
 // @create 2026-11-22 00:00
@@ -21,10 +22,9 @@
 
 #include <cstdint>
 #include <cstdio>
+#include <llvm/Support/JSON.h>
 #include <optional>
 #include <string>
-
-#include <llvm/Support/JSON.h>
 
 namespace uranite::lsp::jsonrpc {
 
