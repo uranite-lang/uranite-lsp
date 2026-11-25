@@ -1,3 +1,4 @@
+
 //
 // @author hxAri (hxari)
 // @create 2026-11-22 00:00
@@ -16,11 +17,11 @@
 // along with this program. If not, see <https://www.gnu.org/licenses/>.
 //
 
-#include "uranite-lsp/text/uri.hpp"
-
 #include <cctype>
 #include <filesystem>
 #include <string>
+
+#include "uranite-lsp/text/uri.hpp"
 
 namespace uranite::lsp::text {
 
