@@ -16,20 +16,18 @@
 // along with this program. If not, see <https://www.gnu.org/licenses/>.
 //
 
-#include "uranite-lsp/cst/query-set.hpp"
-
 #include <cstdlib>
 #include <filesystem>
+#include <fmt/format.h>
 #include <fstream>
 #include <sstream>
 #include <string>
+#include <tree_sitter/api.h>
 #include <vector>
 
-#include <fmt/format.h>
-#include <tree_sitter/api.h>
-
 #include "uranite-lsp/cst/language.hpp"
-#include "query-sources.hpp"
+#include "uranite-lsp/cst/query-set.hpp"
+#include "uranite-lsp/generated/query-sources.hpp"
 
 namespace uranite::lsp::cst {
 
