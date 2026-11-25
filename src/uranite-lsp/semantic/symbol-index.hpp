@@ -1,3 +1,4 @@
+
 //
 // @author hxAri (hxari)
 // @create 2026-11-22 00:00
@@ -72,7 +73,9 @@ namespace uranite::lsp::semantic {
 			void index( const ast::nodes::Program& program,
 			            const std::unordered_map<std::string, std::vector<uranite::semantic::SymbolSharedPointer>>& accumulatedSymbols,
 			            const std::unordered_map<std::string, uranite::semantic::TypeSharedPointer>& accumulatedTypes,
-			            const uranite::semantic::ScopeSharedPointer& globalScope );
+			            const uranite::semantic::ScopeSharedPointer& globalScope,
+			            const std::string& sourceText = "",
+			            const std::string& documentPath = "" );
 
 			// Position is 0-based LSP.
 			const IndexedSymbol* symbolAt( uint32_t line, uint32_t col ) const;
@@ -96,6 +99,7 @@ namespace uranite::lsp::semantic {
 			std::vector<IndexedCall> callSites;
 			std::map<std::string, std::vector<std::size_t>> definitionsByName;
 			std::map<std::string, std::vector<std::size_t>> referencesByName;
+			std::string documentPath;
 	};
 
 } // namespace uranite::lsp::semantic
