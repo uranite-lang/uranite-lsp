@@ -1,3 +1,4 @@
+
 //
 // @author hxAri (hxari)
 // @create 2026-11-22 00:00
@@ -48,6 +49,14 @@ namespace uranite::lsp::text {
 			std::string content;
 			int documentVersion;
 	};
+
+	/**
+	 * @brief Cheap structural safety check (bracket balance, string sanity)
+	 *        guarding the compiler parser against mid-typing buffers. The
+	 *        parser is not hardened against unbalanced delimiters, so buffers
+	 *        failing this check must never reach Frontend::analyze.
+	 */
+	bool looksParseable( const std::string& text );
 
 } // namespace uranite::lsp::text
 
