@@ -1,3 +1,4 @@
+
 //
 // @author hxAri (hxari)
 // @create 2026-11-23 00:00
@@ -16,13 +17,12 @@
 // along with this program. If not, see <https://www.gnu.org/licenses/>.
 //
 
-#include "uranite-lsp/semantic/module-graph.hpp"
-
 #include <algorithm>
 #include <filesystem>
 #include <map>
 #include <fstream>
 #include <cstdlib>
+#include <mutex>
 #include <sstream>
 #include <string>
 #include <unordered_set>
@@ -32,6 +32,7 @@
 #include "uranite-lsp/cst/parse-session.hpp"
 #include "uranite-lsp/cst/query-set.hpp"
 #include "uranite-lsp/cst/symbol-provider.hpp"
+#include "uranite-lsp/semantic/module-graph.hpp"
 
 namespace uranite::lsp::semantic {
 
@@ -42,6 +43,82 @@ namespace uranite::lsp::semantic {
 			if( first == std::string::npos ) return "";
 			const std::size_t last = value.find_last_not_of( " \t\r\n" );
 			return value.substr( first, last - first + 1 );
+		}
+
+		/**
+		 * @brief Locates the first occurrence of a name that is not on a comment
+		 * line, so doc extraction anchors at the declaration, not the header.
+		 */
+		std::size_t definitionNamePos( const std::string& source, const std::string& name ) {
+			std::size_t pos = 0;
+			while( ( pos = source.find( name, pos ) ) != std::string::npos ) {
+				std::size_t lineStart = pos;
+				while( lineStart > 0 && source[ lineStart - 1 ] != '\n' ) lineStart--;
+				std::size_t lineEnd = source.find( '\n', lineStart );
+				if( lineEnd == std::string::npos ) lineEnd = source.size();
+				const std::string t = trim( source.substr( lineStart, lineEnd - lineStart ) );
+				if( t.rfind( "#", 0 ) != 0 ) return pos;
+				pos += name.size();
+			}
+			return std::string::npos;
+		}
+
+		/**
+		 * @brief Reads a file's own package declaration; it is the authoritative
+		 * canonical module name (root-relative aliases differ per root).
+		 */
+		std::string packageDeclarationOf( const std::string& filePath ) {
+			std::ifstream file( filePath );
+			if( file.is_open() == false ) return "";
+			std::string line;
+			while( std::getline( file, line ) ) {
+				const std::string t = trim( line );
+				if( t.rfind( "package ", 0 ) == 0 ) return trim( t.substr( 8 ) );
+			}
+			return "";
+		}
+
+		/**
+		 * @brief Process-wide cache of per-file export scans. The stdlib tree is
+		 * immutable during a session, so completion requests must not re-parse
+		 * every module for each keystroke. Entries are validated by file size.
+		 */
+		struct ExportInfoCacheEntry {
+			std::uintmax_t fileSize = 0;
+			std::vector<ModuleGraph::ExportInfo> infos;
+		};
+
+		std::mutex exportInfoCacheMutex;
+		std::map<std::string, ExportInfoCacheEntry> exportInfoCache;
+
+		/** @brief One process-wide compiled query set reused by every export scan. */
+		cst::QuerySet& sharedQuerySet() {
+			static cst::QuerySet queries;
+			static std::once_flag once;
+			std::call_once( once, [] { queries.load(); } );
+			return queries;
+		}
+
+		bool exportInfoCacheLookup( const std::string& key, const std::string& filePath,
+		                           std::vector<ModuleGraph::ExportInfo>& output ) {
+			std::error_code error;
+			const std::uintmax_t fileSize = std::filesystem::file_size( filePath, error );
+			if( error ) return false;
+			std::lock_guard<std::mutex> lock( exportInfoCacheMutex );
+			const auto found = exportInfoCache.find( key );
+			if( found == exportInfoCache.end() ) return false;
+			if( found->second.fileSize != fileSize ) return false;
+			output = found->second.infos;
+			return true;
+		}
+
+		void exportInfoCacheStore( const std::string& key, const std::string& filePath,
+		                           std::vector<ModuleGraph::ExportInfo>&& infos ) {
+			std::error_code error;
+			const std::uintmax_t fileSize = std::filesystem::file_size( filePath, error );
+			if( error ) return;
+			std::lock_guard<std::mutex> lock( exportInfoCacheMutex );
+			exportInfoCache[ key ] = { fileSize, std::move( infos ) };
 		}
 
 		bool isDirectory( const std::string& path ) {
@@ -405,53 +482,85 @@ namespace uranite::lsp::semantic {
 			// walk backwards over whitespace
 			while( i > 0 && ( source[ i - 1 ] == ' ' || source[ i - 1 ] == '\t' || source[ i - 1 ] == '\n' || source[ i - 1 ] == '\r' ) ) i--;
 			if( i == 0 ) return "";
-			// block comment /** ... */ or /// lines
-			if( i >= 2 && source[ i - 2 ] == '*' && source[ i - 1 ] == '/' ) {
-				std::size_t end = i;
-				std::size_t begin = source.rfind( "/*", i - 2 );
-				if( begin == std::string::npos ) return "";
-				std::string comment = source.substr( begin + 2, end - 2 - ( begin + 2 ) );
-				// clean
-				std::string result;
-				std::istringstream stream( comment );
-				std::string line;
-				while( std::getline( stream, line ) ) {
-					std::string t = trim( line );
-					if( t.rfind( "* ", 0 ) == 0 ) t = t.substr( 2 );
-					else if( t == "*" ) t = "";
-					else if( t.rfind( "*", 0 ) == 0 ) t = trim( t.substr( 1 ) );
-					if( result.empty() == false && t.empty() == false ) result += "\n";
-					result += t;
+
+			// G13: Uranite docstrings follow the declaration header inside the body.
+			{
+				std::size_t headerEnd = source.find( '\n', startByte );
+				if( headerEnd == std::string::npos ) headerEnd = source.size();
+				std::size_t cursor = headerEnd;
+				while( cursor <= source.size() ) {
+					std::size_t lineEnd = source.find( '\n', cursor );
+					if( lineEnd == std::string::npos ) lineEnd = source.size();
+					const std::string line = trim( source.substr( cursor, lineEnd - cursor ) );
+					if( line.empty() == false ) {
+						if( line.rfind( "\"\"\"", 0 ) == 0 ) {
+							const std::string head = trim( line.substr( 3 ) );
+							const std::size_t closed = head.find( "\"\"\"" );
+							if( closed != std::string::npos ) return trim( head.substr( 0, closed ) );
+							std::string result = head;
+							std::size_t scan = lineEnd + 1;
+							while( scan <= source.size() ) {
+								std::size_t end = source.find( '\n', scan );
+								if( end == std::string::npos ) end = source.size();
+								const std::string next = source.substr( scan, end - scan );
+								const std::size_t stop = next.find( "\"\"\"" );
+								if( stop != std::string::npos ) {
+									result += "\n" + trim( next.substr( 0, stop ) );
+									return trim( result );
+								}
+								result += "\n" + trim( next );
+								scan = end + 1;
+							}
+							return trim( result );
+						}
+						break;
+					}
+					if( lineEnd >= source.size() ) break;
+					cursor = lineEnd + 1;
 				}
-				return trim( result );
 			}
-			// /// lines
-			std::vector<std::string> lines;
-			std::size_t pos = i;
-			while( pos > 0 ) {
-				// find start of line
-				std::size_t lineStart = pos;
-				while( lineStart > 0 && source[ lineStart - 1 ] != '\n' ) lineStart--;
-				std::string line = source.substr( lineStart, pos - lineStart );
-				std::string t = trim( line );
-				if( t.rfind( "///", 0 ) == 0 ) {
-					std::string content = t.substr( 3 );
+
+			// G13: `#` line comments directly above the declaration.
+			{
+				std::vector<std::pair<std::size_t, std::size_t>> lines;
+				std::size_t start = 0;
+				for( std::size_t p = 0; p <= source.size(); p++ ) {
+					if( p == source.size() || source[ p ] == '\n' ) {
+						lines.push_back( { start, p } );
+						start = p + 1;
+					}
+				}
+				std::size_t lineIndex = lines.size() > 0 ? lines.size() - 1 : 0;
+				for( std::size_t l = 0; l < lines.size(); l++ ) {
+					if( i >= lines[ l ].first && i <= lines[ l ].second ) { lineIndex = l; break; }
+				}
+				std::vector<std::string> collected;
+				for( std::size_t l = lineIndex; l > 0; l-- ) {
+					const std::string text = trim( source.substr( lines[ l - 1 ].first, lines[ l - 1 ].second - lines[ l - 1 ].first ) );
+					if( text.rfind( "#", 0 ) != 0 ) break;
+					std::string content = text.substr( 1 );
 					if( content.empty() == false && content[ 0 ] == ' ' ) content = content.substr( 1 );
-					lines.push_back( content );
-					pos = lineStart > 0 ? lineStart - 1 : 0;
-					while( pos > 0 && ( source[ pos - 1 ] == ' ' || source[ pos - 1 ] == '\t' || source[ pos - 1 ] == '\r' ) ) pos--;
-					continue;
+					collected.push_back( content );
 				}
-				break;
+				if( collected.empty() == false ) {
+					std::reverse( collected.begin(), collected.end() );
+					std::string result;
+					for( const std::string& line : collected ) {
+						if( result.empty() == false ) result += "\n";
+						result += line;
+					}
+					return trim( result );
+				}
 			}
-			if( lines.empty() ) return "";
-			std::reverse( lines.begin(), lines.end() );
-			std::string result;
-			for( const std::string& l : lines ) {
-				if( result.empty() == false ) result += "\n";
-				result += l;
+
+			// G13: `#{ ... }#` block comments directly above the declaration.
+			if( i >= 2 && source[ i - 1 ] == '#' && source[ i - 2 ] == '}' ) {
+				const std::size_t begin = source.rfind( "#{", i - 2 );
+				if( begin != std::string::npos ) {
+					return trim( source.substr( begin + 2, i - 2 - ( begin + 2 ) ) );
+				}
 			}
-			return trim( result );
+			return "";
 		}
 
 		std::string extractSignature( const std::string& source, uint32_t startByte ) {
@@ -491,6 +600,10 @@ namespace uranite::lsp::semantic {
 		if( cur.empty() == false ) segs.push_back( cur );
 		std::string filePath = this->findModule( segs );
 		if( filePath.empty() ) return result;
+
+		// Immutable-file cache: avoids re-parsing the whole stdlib per completion.
+		const std::string cacheKey = filePath + "|" + moduleDottedPath;
+		if( exportInfoCacheLookup( cacheKey, filePath, result ) ) return result;
 
 		std::ifstream file( filePath );
 		if( file.is_open() == false ) return result;
@@ -535,19 +648,21 @@ namespace uranite::lsp::semantic {
 				std::string ssrc = sb.str();
 				cst::ParseSession session;
 				session.parse( ssrc );
-				cst::QuerySet queries;
-				queries.load();
+				cst::QuerySet& queries = sharedQuerySet();
 				cst::SymbolProvider provider;
 				auto symbols = provider.provide( ssrc, session.rootNode(), queries );
 				for( const auto& symbol : symbols ) {
 					if( symbol.role != cst::SymbolRole::Definition ) continue;
+					// Class fields and locals parse as variable declarations; they
+					// are never importable module symbols.
+					if( symbol.capture == "definition.variable" ) continue;
 					if( infoByName.count( symbol.name ) ) continue;
 					ExportInfo info;
 					info.name = symbol.name;
 					info.module = moduleDottedPath;
 					info.kind = kindForName( symbol.capture, symbol.name );
-					// Find byte offset of symbol in source for doc/signature extraction
-					std::size_t namePos = ssrc.find( symbol.name );
+					// Find the declaration occurrence (skip comment-header hits).
+					std::size_t namePos = definitionNamePos( ssrc, symbol.name );
 					if( namePos != std::string::npos ) {
 						info.documentation = extractDocComment( ssrc, static_cast<uint32_t>( namePos ) );
 						// signature: go back to line start
@@ -570,23 +685,26 @@ namespace uranite::lsp::semantic {
 					result.push_back( info );
 				}
 			}
+			exportInfoCacheStore( cacheKey, filePath, std::vector<ExportInfo>( result ) );
 			return result;
 		}
 
 		cst::ParseSession session;
 		session.parse( source );
-		cst::QuerySet queries;
-		queries.load();
+		cst::QuerySet& queries = sharedQuerySet();
 		cst::SymbolProvider provider;
 		auto symbols = provider.provide( source, session.rootNode(), queries );
 		for( const auto& symbol : symbols ) {
 			if( symbol.role != cst::SymbolRole::Definition ) continue;
+			// Class fields and locals parse as variable declarations; they are
+			// never importable module symbols.
+			if( symbol.capture == "definition.variable" ) continue;
 			ExportInfo info;
 			info.name = symbol.name;
 			info.module = moduleDottedPath;
 			info.kind = kindForName( symbol.capture, symbol.name );
-			// approximate location by searching name
-			std::size_t namePos = source.find( symbol.name );
+			// approximate location by searching the declaration occurrence
+			std::size_t namePos = definitionNamePos( source, symbol.name );
 			if( namePos != std::string::npos ) {
 				info.documentation = extractDocComment( source, static_cast<uint32_t>( namePos ) );
 				std::size_t lineStart = namePos;
@@ -598,6 +716,7 @@ namespace uranite::lsp::semantic {
 		}
 		std::sort( result.begin(), result.end(), []( const ExportInfo& a, const ExportInfo& b ) { return a.name < b.name; } );
 		result.erase( std::unique( result.begin(), result.end(), []( const ExportInfo& a, const ExportInfo& b ) { return a.name == b.name; } ), result.end() );
+		exportInfoCacheStore( cacheKey, filePath, std::vector<ExportInfo>( result ) );
 		return result;
 	}
 
@@ -611,7 +730,11 @@ namespace uranite::lsp::semantic {
 
 	std::vector<std::pair<std::string, std::string>> ModuleGraph::allExportedSymbols() const {
 		std::vector<std::pair<std::string, std::string>> result;
-		std::unordered_set<std::string> seen;
+		// The same symbol is reachable through several roots and through __mod__
+		// re-exports. Canonicalize to the file's own package declaration and
+		// prefer the shortest dotted module (aggregate re-exports) so
+		// auto-imports merge into existing aggregate import lines.
+		std::map<std::string, std::string> best;
 		for( const std::string& root : this->allModuleRoots() ) {
 			std::error_code error;
 			for( auto it = std::filesystem::recursive_directory_iterator( root, error ); it != std::filesystem::recursive_directory_iterator(); it.increment( error ) ) {
@@ -620,19 +743,23 @@ namespace uranite::lsp::semantic {
 				if( it->path().extension() != ".urn" ) continue;
 				std::string modulePath = dottedModuleForPath( root, it->path() );
 				if( modulePath.empty() ) continue;
-				// Canonicalize stdlib module names as uranite.<path>
-				std::string canonical = modulePath;
+				std::string canonical = packageDeclarationOf( it->path().string() );
+				if( canonical.empty() ) canonical = modulePath;
 				if( root == this->stdlibRoot() && canonical.rfind( "uranite.", 0 ) != 0 ) {
 					canonical = "uranite." + canonical;
 				}
 				auto exports = this->exportedSymbols( canonical );
 				for( const auto& item : exports ) {
-					std::string key = item.first + "|" + canonical;
-					if( seen.count( key ) ) continue;
-					seen.insert( key );
-					result.push_back( { item.first, canonical } );
+					const auto found = best.find( item.first );
+					if( found == best.end() || canonical.size() < found->second.size() ) {
+						best[ item.first ] = canonical;
+					}
 				}
 			}
+		}
+		result.reserve( best.size() );
+		for( const auto& entry : best ) {
+			result.push_back( { entry.first, entry.second } );
 		}
 		return result;
 	}
