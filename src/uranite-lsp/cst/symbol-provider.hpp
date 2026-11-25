@@ -1,3 +1,4 @@
+
 //
 // @author hxAri (hxari)
 // @create 2026-11-22 00:00
@@ -20,11 +21,10 @@
 #define _URANITE_LSP_CST_SYMBOL_PROVIDER_HPP_
 
 #include <cstdint>
-#include <string>
-#include <vector>
-
 #include <llvm/Support/JSON.h>
+#include <string>
 #include <tree_sitter/api.h>
+#include <vector>
 
 #include "uranite-lsp/cst/query-set.hpp"
 
