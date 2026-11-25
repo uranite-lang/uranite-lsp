@@ -1,3 +1,4 @@
+
 //
 // @author hxAri (hxari)
 // @create 2026-11-22 00:00
@@ -22,15 +23,20 @@
 #include <string>
 
 #include "uranite/lookup/source.hpp"
-
 #include "uranite-lsp/text/position.hpp"
 
 namespace uranite::lsp::protocol {
 
 	// Convert 1-based compiler Source location to 0-based LSP Position fields.
-	void sourceToLspRange( const uranite::lookup::SourceSharedPointer& src, int& startLine, int& startCol, int& endLine, int& endCol,
-	                       text::PositionEncoding encoding = text::PositionEncoding::Utf16,
-	                       const std::string& documentText = "" );
+	void sourceToLspRange( 
+		const uranite::lookup::SourceSharedPointer& src, 
+		int& startLine, 
+		int& startCol, 
+		int& endLine, 
+		int& endCol,
+	    text::PositionEncoding encoding = text::PositionEncoding::Utf16,
+	    const std::string& documentText = ""
+	);
 
 } // namespace uranite::lsp::protocol
 
