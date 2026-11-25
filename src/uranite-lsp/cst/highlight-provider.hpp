@@ -1,3 +1,4 @@
+
 //
 // @author hxAri (hxari)
 // @create 2026-11-22 00:00
@@ -20,9 +21,8 @@
 #define _URANITE_LSP_CST_HIGHLIGHT_PROVIDER_HPP_
 
 #include <string>
-#include <vector>
-
 #include <tree_sitter/api.h>
+#include <vector>
 
 #include "uranite-lsp/text/document.hpp"
 
