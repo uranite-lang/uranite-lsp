@@ -1,3 +1,4 @@
+
 //
 // @author hxAri (hxari)
 // @create 2026-11-22 00:00
@@ -16,13 +17,11 @@
 // along with this program. If not, see <https://www.gnu.org/licenses/>.
 //
 
-#include "uranite-lsp/cst/parse-session.hpp"
-
+#include <tree_sitter/api.h>
 #include <vector>
 
-#include <tree_sitter/api.h>
-
 #include "uranite-lsp/cst/language.hpp"
+#include "uranite-lsp/cst/parse-session.hpp"
 
 namespace uranite::lsp::cst {
 
