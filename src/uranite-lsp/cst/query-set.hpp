@@ -1,3 +1,4 @@
+
 //
 // @author hxAri (hxari)
 // @create 2026-11-22 00:00
@@ -21,9 +22,8 @@
 
 #include <map>
 #include <string>
-#include <vector>
-
 #include <tree_sitter/api.h>
+#include <vector>
 
 namespace uranite::lsp::cst {
 
