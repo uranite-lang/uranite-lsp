@@ -50,7 +50,7 @@ namespace uranite::lsp::semantic {
 			/** @brief Ordered project/package/workspace module roots (excludes stdlib). */
 			std::vector<std::string> projectModuleRoots() const;
 
-			/** @brief Resolved stdlib root (env / /usr/local/share / ../uranite/stdlibs). */
+			/** @brief Resolved stdlib root (env / /usr/local/lib / workspace-relative paths). */
 			std::string stdlibRoot() const;
 
 			/** @brief All module roots in priority order (project roots then stdlib). */
