@@ -20,7 +20,9 @@
 #ifndef _URANITE_LSP_SEMANTIC_SYMBOL_INDEX_HPP_
 #define _URANITE_LSP_SEMANTIC_SYMBOL_INDEX_HPP_
 
+#include <cstddef>
 #include <cstdint>
+#include <limits>
 #include <map>
 #include <memory>
 #include <string>
@@ -75,7 +77,8 @@ namespace uranite::lsp::semantic {
 			            const std::unordered_map<std::string, uranite::semantic::TypeSharedPointer>& accumulatedTypes,
 			            const uranite::semantic::ScopeSharedPointer& globalScope,
 			            const std::string& sourceText = "",
-			            const std::string& documentPath = "" );
+			            const std::string& documentPath = "",
+			            std::size_t userDeclarationCount = std::numeric_limits<std::size_t>::max() );
 
 			// Position is 0-based LSP.
 			const IndexedSymbol* symbolAt( uint32_t line, uint32_t col ) const;
