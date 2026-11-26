@@ -183,8 +183,10 @@ namespace uranite::lsp::server {
 		if( environment != nullptr && std::filesystem::is_directory( environment ) ) return environment;
 
 		static const char* candidates[] = {
+			"/usr/local/lib/uranite/stdlibs",
 			"/usr/local/share/uranite/stdlibs",
 			"../uranite/stdlibs",
+			"./stdlibs",
 		};
 		for( const char* candidate : candidates ) {
 			if( std::filesystem::is_directory( candidate ) ) return candidate;
@@ -689,16 +691,30 @@ namespace uranite::lsp::server {
 				}
 
 				if( module.empty() == false && symbol.empty() == false && this->moduleGraph != nullptr ) {
-					auto infos = this->moduleGraph->exportedSymbolInfos( module );
-					for( const auto& info : infos ) {
-						if( info.name != symbol ) continue;
-						std::string doc = info.documentation;
-						if( info.detail.empty() == false ) {
-							std::string md = "```uranite\n" + info.detail + "\n```";
-							if( doc.empty() == false ) md += "\n\n" + doc;
-							doc = md;
+					std::shared_ptr<semantic::QueryService> service;
+					if( uri.empty() == false ) service = this->queryServiceFor( uri );
+					if( service == nullptr ) {
+						std::string text;
+						if( uri.empty() == false ) {
+							const workspace::DocumentEntry* entry = this->documents.get( uri );
+							if( entry != nullptr ) text = entry->document.text();
 						}
-						if( doc.empty() == false ) ( *item )[ "documentation" ] = doc;
+						service = std::make_shared<semantic::QueryService>( nullptr, nullptr, this->overlayStore,
+							this->modulesPath, uri, text, this->moduleGraph );
+					}
+					const std::string canonicalDocumentation = service->entityHoverDocumentation( module, symbol );
+					if( canonicalDocumentation.empty() == false ) ( *item )[ "documentation" ] = canonicalDocumentation;
+					for( const auto& info : this->moduleGraph->exportedSymbolInfos( module ) ) {
+						if( info.name != symbol ) continue;
+						if( canonicalDocumentation.empty() ) {
+							std::string doc = info.documentation;
+							if( info.detail.empty() == false ) {
+								std::string md = "```uranite\n" + info.detail + "\n```";
+								if( doc.empty() == false ) md += "\n\n" + doc;
+								doc = md;
+							}
+							if( doc.empty() == false ) ( *item )[ "documentation" ] = doc;
+						}
 						if( info.detail.empty() == false ) ( *item )[ "detail" ] = info.detail;
 						break;
 					}
