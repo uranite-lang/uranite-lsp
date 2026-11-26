@@ -339,8 +339,17 @@ namespace uranite::lsp::semantic {
 			std::string path( env );
 			if( path.empty() == false && isDirectory( path ) ) return path;
 		}
+		if( isDirectory( "/usr/local/lib/uranite/stdlibs" ) ) return "/usr/local/lib/uranite/stdlibs";
 		if( isDirectory( "/usr/local/share/uranite/stdlibs" ) ) return "/usr/local/share/uranite/stdlibs";
+		if( this->workspaceRoot_.empty() == false ) {
+			const std::filesystem::path workspace( this->workspaceRoot_ );
+			const std::filesystem::path sibling = ( workspace / "../uranite/stdlibs" ).lexically_normal();
+			if( isDirectory( sibling.string() ) ) return sibling.string();
+			const std::filesystem::path local = workspace / "stdlibs";
+			if( isDirectory( local.string() ) ) return local.string();
+		}
 		if( isDirectory( "../uranite/stdlibs" ) ) return "../uranite/stdlibs";
+		if( isDirectory( "./stdlibs" ) ) return "./stdlibs";
 		return "";
 	}
 
