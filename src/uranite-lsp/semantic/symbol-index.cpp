@@ -211,9 +211,10 @@ namespace uranite::lsp::semantic {
 				NodeWalker( SymbolIndex& index, std::set<const Symbol*>& seenDefinitions,
 				            const std::unordered_map<std::string, TypeSharedPointer>& moduleTypes,
 				            const std::unordered_map<std::string, SymbolSharedPointer>& typeSymbols,
-				            const std::string& sourceText )
+				            const std::string& sourceText, std::size_t userDeclarationCount )
 					: index( index ), seenDefinitions( seenDefinitions ), moduleTypes( moduleTypes ),
-					  typeSymbols( typeSymbols ), sourceText( sourceText ) {
+					  typeSymbols( typeSymbols ), sourceText( sourceText ),
+					  userDeclarationCount( userDeclarationCount ) {
 				}
 
 				void walk( const Program& program ) {
@@ -227,6 +228,7 @@ namespace uranite::lsp::semantic {
 				const std::unordered_map<std::string, TypeSharedPointer>& moduleTypes;
 				const std::unordered_map<std::string, SymbolSharedPointer>& typeSymbols;
 				const std::string& sourceText;
+				std::size_t userDeclarationCount;
 				std::vector<uint32_t> argumentLines;
 				std::vector<uint32_t> argumentCols;
 
@@ -563,7 +565,13 @@ namespace uranite::lsp::semantic {
 					this->walkOptional( node.module );
 					this->walkVector( node.imports );
 					this->walkVector( node.exports );
-					this->walkVector( node.declarations );
+					const std::size_t declarationCount = std::min( this->userDeclarationCount, node.declarations.size() );
+					for( std::size_t i = 0; i < declarationCount; i++ ) {
+						this->walkOptional( node.declarations[ i ] );
+					}
+					for( std::size_t i = declarationCount; i < node.declarations.size(); i++ ) {
+						if( node.declarations[ i ] != nullptr ) this->walkInjectedDeclaration( *node.declarations[ i ] );
+					}
 				}
 
 				void walkExport( const ExportDeclaration& node ) {
@@ -574,6 +582,78 @@ namespace uranite::lsp::semantic {
 				}
 
 				void walkModule( const ModuleDeclaration& /*node*/ ) {
+				}
+
+				/** @brief Indexes only declarations from driver-injected module ASTs, never their expressions. */
+				void walkInjectedDeclaration( const Node& node ) {
+					switch( node.kind ) {
+						case Node::Kind::ClassDeclaration: {
+							const ClassDeclaration& declaration = static_cast<const ClassDeclaration&>( node );
+							this->collectTypeDeclaration( declaration.name, declaration.source );
+							for( const ast::nodes::FieldDeclarationSharedPointer& field : declaration.fields ) {
+								if( field != nullptr ) this->collectMemberDeclaration( field->name, field->source, Symbol::Kind::Field, declaration.name );
+							}
+							for( const ast::nodes::DeclarationSharedPointer& method : declaration.methods ) {
+								if( method == nullptr || method->kind != Node::Kind::FunctionDeclaration ) continue;
+								const FunctionDeclaration& function = static_cast<const FunctionDeclaration&>( *method );
+								this->collectMemberDeclaration( function.name, function.source, Symbol::Kind::Function, declaration.name );
+							}
+							break;
+						}
+						case Node::Kind::StructDeclaration: {
+							const StructDeclaration& declaration = static_cast<const StructDeclaration&>( node );
+							this->collectTypeDeclaration( declaration.name, declaration.source );
+							for( const ast::nodes::FieldDeclarationSharedPointer& field : declaration.fields ) {
+								if( field != nullptr ) this->collectMemberDeclaration( field->name, field->source, Symbol::Kind::Field, declaration.name );
+							}
+							for( const ast::nodes::DeclarationSharedPointer& method : declaration.methods ) {
+								if( method == nullptr || method->kind != Node::Kind::FunctionDeclaration ) continue;
+								const FunctionDeclaration& function = static_cast<const FunctionDeclaration&>( *method );
+								this->collectMemberDeclaration( function.name, function.source, Symbol::Kind::Function, declaration.name );
+							}
+							break;
+						}
+						case Node::Kind::TraitDeclaration: {
+							const TraitDeclaration& declaration = static_cast<const TraitDeclaration&>( node );
+							this->collectTypeDeclaration( declaration.name, declaration.source );
+							for( const ast::nodes::FieldDeclarationSharedPointer& field : declaration.fields ) {
+								if( field != nullptr ) this->collectMemberDeclaration( field->name, field->source, Symbol::Kind::Field, declaration.name );
+							}
+							for( const ast::nodes::DeclarationSharedPointer& method : declaration.methods ) {
+								if( method == nullptr || method->kind != Node::Kind::FunctionDeclaration ) continue;
+								const FunctionDeclaration& function = static_cast<const FunctionDeclaration&>( *method );
+								this->collectMemberDeclaration( function.name, function.source, Symbol::Kind::Function, declaration.name );
+							}
+							break;
+						}
+						case Node::Kind::InterfaceDeclaration: {
+							const InterfaceDeclaration& declaration = static_cast<const InterfaceDeclaration&>( node );
+							this->collectTypeDeclaration( declaration.name, declaration.source );
+							for( const ast::nodes::DeclarationSharedPointer& method : declaration.methods ) {
+								if( method == nullptr || method->kind != Node::Kind::FunctionDeclaration ) continue;
+								const FunctionDeclaration& function = static_cast<const FunctionDeclaration&>( *method );
+								this->collectMemberDeclaration( function.name, function.source, Symbol::Kind::Function, declaration.name );
+							}
+							break;
+						}
+						case Node::Kind::EnumDeclaration: {
+							const EnumDeclaration& declaration = static_cast<const EnumDeclaration&>( node );
+							this->collectTypeDeclaration( declaration.name, declaration.source );
+							for( const ast::nodes::DeclarationSharedPointer& method : declaration.methods ) {
+								if( method == nullptr || method->kind != Node::Kind::FunctionDeclaration ) continue;
+								const FunctionDeclaration& function = static_cast<const FunctionDeclaration&>( *method );
+								this->collectMemberDeclaration( function.name, function.source, Symbol::Kind::Function, declaration.name );
+							}
+							break;
+						}
+						case Node::Kind::TypeAliasDeclaration: {
+							const TypeAliasDeclaration& declaration = static_cast<const TypeAliasDeclaration&>( node );
+							this->collectTypeDeclaration( declaration.name, declaration.source );
+							break;
+						}
+						default:
+							break;
+					}
 				}
 
 				void walkClass( const ClassDeclaration& node ) {
@@ -1078,7 +1158,8 @@ namespace uranite::lsp::semantic {
 	                         const std::unordered_map<std::string, TypeSharedPointer>& accumulatedTypes,
 	                         const ScopeSharedPointer& globalScope,
 	                         const std::string& sourceText,
-	                         const std::string& documentPath ) {
+	                         const std::string& documentPath,
+	                         std::size_t userDeclarationCount ) {
 		this->defs.clear();
 		this->refs.clear();
 		this->callSites.clear();
@@ -1143,7 +1224,7 @@ namespace uranite::lsp::semantic {
 			}
 		}
 
-		NodeWalker walker( *this, seen, accumulatedTypes, typeSymbols, sourceText );
+		NodeWalker walker( *this, seen, accumulatedTypes, typeSymbols, sourceText, userDeclarationCount );
 		walker.walk( program );
 	}
 
