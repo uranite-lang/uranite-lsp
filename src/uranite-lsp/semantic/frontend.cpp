@@ -120,7 +120,7 @@ namespace uranite::lsp::semantic {
 			engine.emit( diagnostic.level, diagnostic.source, diagnostic.messages, diagnostic.hinting );
 		}
 
-		auto buildIndex = [ &result, &source ]() {
+		auto buildIndex = [ &result, &source, userDeclCount ]() {
 			if( result.program == nullptr || result.analyzer == nullptr ) return;
 			for( const auto& entry : result.analyzer->getRegisteredTypes() ) {
 				if( entry.second == nullptr ) continue;
@@ -130,7 +130,7 @@ namespace uranite::lsp::semantic {
 			}
 			result.symbolIndex = std::make_shared<SymbolIndex>();
 			result.symbolIndex->index( *result.program, result.moduleSymbols, result.moduleTypes,
-				result.analyzer->globalScope(), source, result.canonicalPath );
+				result.analyzer->globalScope(), source, result.canonicalPath, userDeclCount );
 		};
 
 		// Semantic analyzer
