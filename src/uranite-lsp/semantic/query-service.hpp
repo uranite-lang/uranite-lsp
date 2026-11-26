@@ -92,6 +92,7 @@ namespace uranite::lsp::semantic {
 			              std::shared_ptr<ModuleGraph> moduleGraph = nullptr );
 
 			QueryHover hover( uint32_t line, uint32_t col ) const;
+			std::string entityHoverDocumentation( const std::string& modulePath, const std::string& symbolName ) const;
 			QueryLocation definition( uint32_t line, uint32_t col ) const;
 			std::vector<QueryLocation> references( uint32_t line, uint32_t col, bool includeDeclaration ) const;
 			std::vector<QueryCompletion> completion( uint32_t line, uint32_t col ) const;
@@ -111,6 +112,13 @@ namespace uranite::lsp::semantic {
 
 			static QueryLocation toLocation( const IndexedSymbol& symbol );
 			std::vector<QueryLocation> locationsFor( uint32_t line, uint32_t col, bool includeDeclaration ) const;
+			const IndexedSymbol* definitionFor( const IndexedSymbol* symbol ) const;
+			const IndexedSymbol* importDefinition( const std::string& modulePath, const std::string& name ) const;
+			std::pair<std::string, std::string> importOriginFor( const std::string& localName ) const;
+			std::string buildEntityHover( const IndexedSymbol* symbol, const IndexedSymbol* definition,
+			                              const std::string& qualifiedName, const std::string& modulePath,
+			                              const std::string& localName,
+			                              const ModuleGraph::ExportInfo* exportInfo = nullptr ) const;
 	};
 
 } // namespace uranite::lsp::semantic
