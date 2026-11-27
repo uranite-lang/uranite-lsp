@@ -513,10 +513,11 @@ namespace uranite::lsp::semantic {
 
 		/** @brief Canonical Markdown renderer shared by every entity hover path. */
 		std::string formatEntityHover( const HoverMetadata& metadata ) {
-			std::string result = metadata.kind + ":\n```uranite\n" + metadata.signature + "\n```";
+			std::string result = "```uranite\n" + metadata.signature + "\n```";
+			if( metadata.doc.descriptions.empty() == false ) result += "\n\n" + metadata.doc.descriptions;
 			auto section = [ & ]( const std::string& title, const std::vector<std::string>& lines ) {
 				if( lines.empty() ) return;
-				result += "\n\n###### " + title;
+				result += "\n\n### " + title;
 				for( const std::string& line : lines ) result += "\n" + line;
 			};
 			std::vector<std::string> complexity;
@@ -540,7 +541,6 @@ namespace uranite::lsp::semantic {
 			std::vector<std::string> parameterLines;
 			for( const DocParameter& parameter : metadata.doc.parameters ) {
 				std::string line = "- `" + parameter.name + "`";
-				if( parameter.type.empty() == false ) line += " (`" + parameter.type + "`)";
 				if( parameter.description.empty() == false ) line += " " + parameter.description;
 				parameterLines.push_back( std::move( line ) );
 			}
@@ -563,9 +563,8 @@ namespace uranite::lsp::semantic {
 			std::vector<std::string> usesLines;
 			for( const std::string& name : metadata.usesRelations ) usesLines.push_back( "- `" + name + "`" );
 			section( "Uses", usesLines );
-			if( metadata.doc.descriptions.empty() == false ) result += "\n\n###### Descriptions\n" + metadata.doc.descriptions;
 			if( metadata.doc.examples.empty() == false ) {
-				result += "\n\n###### Examples\n```uranite\n";
+				result += "\n\n### Examples\n```uranite\n";
 				for( const std::string& example : metadata.doc.examples ) result += example + "\n";
 				result += "```";
 			}
@@ -676,38 +675,6 @@ namespace uranite::lsp::semantic {
 				}
 			}
 			return line;
-		}
-
-		std::string stripTrailingColon( std::string value ) {
-			value = trim( value );
-			if( value.empty() == false && value.back() == ':' ) value.pop_back();
-			return trim( value );
-		}
-
-		std::string cutTypeHierarchy( std::string value ) {
-			value = stripTrailingColon( value );
-			const std::vector<std::string> markers = { " extends ", " implements ", " uses ", " = " };
-			std::size_t cut = std::string::npos;
-			for( const std::string& marker : markers ) {
-				const std::size_t found = value.find( marker );
-				if( found != std::string::npos && ( cut == std::string::npos || found < cut ) ) cut = found;
-			}
-			if( cut != std::string::npos ) value = value.substr( 0, cut );
-			return trim( value );
-		}
-
-		std::string replaceDeclarationName( std::string declaration, const std::string& localName,
-		                                    const std::string& qualifiedName, const std::string& keyword ) {
-			declaration = trim( declaration );
-			std::size_t position = keyword.empty() ? 0 : declaration.find( keyword );
-			if( position == std::string::npos ) return declaration;
-			position += keyword.size();
-			while( position < declaration.size() && std::isspace( static_cast<unsigned char>( declaration[ position ] ) ) ) position++;
-			if( localName.empty() == false && declaration.compare( position, localName.size(), localName ) == 0 ) {
-				declaration.replace( position, localName.size(), qualifiedName );
-			}
-			else declaration.insert( position, qualifiedName );
-			return declaration;
 		}
 
 		std::string typeKindName( const uranite::semantic::TypeSharedPointer& type, const std::string& declarationLine ) {
@@ -866,33 +833,6 @@ namespace uranite::lsp::semantic {
 			const std::string text = type->toString();
 			const std::size_t open = text.find( '<' );
 			return open == std::string::npos ? "" : text.substr( open );
-		}
-
-		std::string fallbackFunctionSignature( const std::string& keyword, const std::string& qualifiedName,
-		                                       const uranite::semantic::TypeSharedPointer& type ) {
-			auto function = std::dynamic_pointer_cast<uranite::semantic::FunctionType>( type );
-			if( function == nullptr ) return keyword + " " + qualifiedName + "()";
-			std::string result = keyword + " " + qualifiedName;
-			if( function->genericParameterNames.empty() == false ) {
-				result += "<";
-				for( std::size_t i = 0; i < function->genericParameterNames.size(); i++ ) {
-					if( i > 0 ) result += ", ";
-					result += function->genericParameterNames[ i ];
-				}
-				result += ">";
-			}
-			result += "( ";
-			for( std::size_t i = 0; i < function->parameterTypes.size(); i++ ) {
-				if( i > 0 ) result += ", ";
-				const std::string parameterType = function->parameterTypes[ i ] == nullptr ? "Any" : function->parameterTypes[ i ]->toString();
-				if( i < function->parameterNames.size() && function->parameterNames[ i ].empty() == false ) {
-					result += parameterType + " " + function->parameterNames[ i ];
-				}
-				else result += parameterType;
-			}
-			result += " )";
-			if( function->returnType != nullptr ) result += " -> " + function->returnType->toString();
-			return result;
 		}
 
 	} // namespace
@@ -1111,63 +1051,134 @@ namespace uranite::lsp::semantic {
 		const std::vector<std::string> modifiers = extractModifiers( declarationLine );
 		const std::string modifierPrefix = modifiers.empty() ? "" : joinModifiers( modifiers ) + " ";
 		const std::string withoutModifiers = removeLeadingModifiers( declarationLine );
+		if( kind == "method" && definition != nullptr && definition->container == localName ) kind = "constructor";
 		std::string displayQualifiedName = qualifiedName;
 		const bool typeAlias = kind == "type" && ( withoutModifiers.rfind( "type ", 0 ) == 0 ||
 		                                          declarationLine.find( " type " ) != std::string::npos );
 		if( typeAlias && publicModule.empty() == false ) displayQualifiedName = publicModule + "." + localName;
-		if( ( kind == "method" || kind == "property" ) && definition != nullptr && definition->container.empty() == false &&
-		    displayQualifiedName.find( definition->container + "." ) == std::string::npos ) {
+		if( kind == "constructor" && definition != nullptr && definition->container.empty() == false ) {
+			const std::string ownerPackage = actualPackage.empty() ? publicModule : actualPackage;
+			if( ownerPackage.empty() == false ) displayQualifiedName = ownerPackage + "." + definition->container;
+		}
+		else if( ( kind == "method" || kind == "property" ) && definition != nullptr &&
+		    definition->container.empty() == false && displayQualifiedName.find( definition->container + "." ) == std::string::npos ) {
 			const std::string ownerPackage = actualPackage.empty() ? publicModule : actualPackage;
 			if( ownerPackage.empty() == false ) displayQualifiedName = ownerPackage + "." + definition->container + "." + localName;
 		}
 
-		const bool callable = kind == "function" || kind == "method" || ( kind == "property" && withoutModifiers.rfind( "property ", 0 ) == 0 );
-		std::string signature;
-		if( kind == "module" ) signature = displayQualifiedName;
-		else if( callable && declarationLine.empty() == false ) {
-			const std::string keyword = kind == "property" ? "property" : "function";
-			std::string replaced = replaceDeclarationName( declarationLine, localName, displayQualifiedName, keyword );
-			std::size_t keywordPos = replaced.find( keyword );
-			if( keywordPos == std::string::npos && keyword == "property" ) {
-				replaced = replaceDeclarationName( declarationLine, localName, displayQualifiedName, "function" );
-				keywordPos = replaced.find( "function" );
-			}
-			if( keywordPos != std::string::npos ) signature = modifierPrefix + stripTrailingColon( replaced.substr( keywordPos ) );
-		}
-		else if( kind == "class" || kind == "struct" || kind == "interface" || kind == "trait" || kind == "enum" || kind == "type" ) {
-			std::string declaration = withoutModifiers;
-			for( const char* keyword : { "class", "struct", "interface", "trait", "enum", "type" } ) {
-				if( declaration.rfind( std::string( keyword ) + " ", 0 ) == 0 ) {
-					declaration = trim( declaration.substr( std::strlen( keyword ) + 1 ) );
-					break;
+		const bool genericEntity = kind == "class" || kind == "struct" || kind == "interface" ||
+		                           kind == "trait" || kind == "enum";
+		const bool fieldProperty = symbolKind == Symbol::Kind::Field;
+		const std::string entityName = displayQualifiedName.empty() ? localName : displayQualifiedName;
+		const std::string typeText = type == nullptr ? "" : qualifyTypeText( type->toString(), type );
+		std::string declarationType;
+		if( withoutModifiers.empty() == false && localName.empty() == false ) {
+			const std::size_t namePos = withoutModifiers.find( localName );
+			if( namePos != std::string::npos && namePos > 0 ) {
+				const std::string candidate = trim( withoutModifiers.substr( 0, namePos ) );
+				if( candidate.find( '(' ) == std::string::npos && candidate.find( '=' ) == std::string::npos ) {
+					declarationType = candidate;
 				}
 			}
-			declaration = replaceDeclarationName( cutTypeHierarchy( declaration ), localName, displayQualifiedName, "" );
-			signature = modifierPrefix + declaration;
 		}
-		else if( kind == "const" ) {
-			std::string typeText = type == nullptr ? "" : qualifyTypeText( type->toString(), type );
-			if( declarationLine.empty() == false ) {
-				const std::size_t namePos = withoutModifiers.find( localName );
-				if( namePos != std::string::npos ) typeText = trim( withoutModifiers.substr( 0, namePos ) );
+		const std::string valueType = kind == "parameter" || declarationType.empty() ? typeText : declarationType;
+		auto parameterVisibility = [ & ]() {
+			const std::vector<std::string> visibilityModifiers = { "public", "private", "protect" };
+			const std::size_t open = declarationLine.find( '(' );
+			if( open == std::string::npos ) {
+				for( const std::string& visibility : visibilityModifiers ) {
+					if( trim( declarationLine ).rfind( visibility + " ", 0 ) == 0 ) return visibility + " ";
+				}
+				return std::string();
 			}
-			signature = modifierPrefix + "const " + displayQualifiedName + ": " + typeText;
-		}
-		else if( declarationLine.empty() == false && !withoutModifiers.empty() ) {
-			std::string typeText = type == nullptr ? "" : qualifyTypeText( type->toString(), type );
-			const std::size_t namePos = withoutModifiers.find( localName );
-			if( namePos != std::string::npos ) typeText = trim( withoutModifiers.substr( 0, namePos ) );
-			if( definition != nullptr && definition->col == 0 && displayQualifiedName.find( '.' ) != std::string::npos ) {
-				signature = modifierPrefix + displayQualifiedName + ": " + typeText;
+			const std::size_t close = declarationLine.find( ')', open + 1 );
+			const std::string parameters = declarationLine.substr( open + 1,
+				( close == std::string::npos ? declarationLine.size() : close ) - open - 1 );
+			std::size_t start = 0;
+			std::size_t angleDepth = 0;
+			std::size_t parenDepth = 0;
+			auto inspect = [ & ]( const std::string& parameter ) {
+				const std::string cleaned = trim( parameter );
+				std::istringstream words( cleaned );
+				std::string word;
+				bool matches = false;
+				while( words >> word ) {
+					if( word == localName ) { matches = true; break; }
+				}
+				if( matches == false ) return std::string();
+				for( const std::string& visibility : visibilityModifiers ) {
+					if( cleaned.rfind( visibility + " ", 0 ) == 0 ) return visibility + " ";
+				}
+				return std::string();
+			};
+			for( std::size_t i = 0; i <= parameters.size(); i++ ) {
+				const char ch = i < parameters.size() ? parameters[ i ] : ',';
+				if( ch == '<' ) angleDepth++;
+				else if( ch == '>' && angleDepth > 0 ) angleDepth--;
+				else if( ch == '(' ) parenDepth++;
+				else if( ch == ')' && parenDepth > 0 ) parenDepth--;
+				else if( ch == ',' && angleDepth == 0 && parenDepth == 0 ) {
+					const std::string visibility = inspect( parameters.substr( start, i - start ) );
+					if( visibility.empty() == false ) return visibility;
+					start = i + 1;
+				}
 			}
-			else signature = modifierPrefix + typeText + " " + localName;
+			return std::string();
+		};
+		auto parameterDeclaredType = [ & ]() {
+			const std::size_t open = declarationLine.find( '(' );
+			if( open == std::string::npos ) return std::string();
+			const std::size_t close = declarationLine.find( ')', open + 1 );
+			const std::string parameters = declarationLine.substr( open + 1,
+				( close == std::string::npos ? declarationLine.size() : close ) - open - 1 );
+			std::size_t start = 0;
+			std::size_t angleDepth = 0;
+			std::size_t parenDepth = 0;
+			auto inspect = [ & ]( const std::string& parameter ) {
+				std::string cleaned = trim( parameter );
+				for( const std::string& visibility : { "public", "private", "protect" } ) {
+					if( cleaned.rfind( visibility + " ", 0 ) == 0 ) {
+						cleaned = trim( cleaned.substr( visibility.size() + 1 ) );
+						break;
+					}
+				}
+				const std::size_t namePos = cleaned.find( localName );
+				if( namePos == std::string::npos ) return std::string();
+				return trim( cleaned.substr( 0, namePos ) );
+			};
+			for( std::size_t i = 0; i <= parameters.size(); i++ ) {
+				const char ch = i < parameters.size() ? parameters[ i ] : ',';
+				if( ch == '<' ) angleDepth++;
+				else if( ch == '>' && angleDepth > 0 ) angleDepth--;
+				else if( ch == '(' ) parenDepth++;
+				else if( ch == ')' && parenDepth > 0 ) parenDepth--;
+				else if( ch == ',' && angleDepth == 0 && parenDepth == 0 ) {
+					const std::string declaredType = inspect( parameters.substr( start, i - start ) );
+					if( declaredType.empty() == false ) return declaredType;
+					start = i + 1;
+				}
+			}
+			return std::string();
+		};
+		const std::string parameterType = parameterDeclaredType();
+		std::string signature;
+		if( kind == "const" ) {
+			signature = modifierPrefix + ( valueType.empty() ? localName : valueType + " " + localName );
 		}
-		else if( callable ) signature = modifierPrefix + fallbackFunctionSignature( kind == "property" ? "property" : "function", displayQualifiedName, type );
-		else if( kind == "class" || kind == "struct" || kind == "interface" || kind == "trait" || kind == "enum" || kind == "type" ) {
-			signature = modifierPrefix + displayQualifiedName + genericSuffix( type );
+		else if( kind == "variable" ) {
+			signature = "variable " + ( valueType.empty() ? localName : valueType + " " + localName );
 		}
-		else signature = modifierPrefix + ( type == nullptr ? localName : qualifyTypeText( type->toString(), type ) + " " + localName );
-		if( signature.empty() ) signature = displayQualifiedName.empty() ? localName : displayQualifiedName;
+		else if( kind == "parameter" ) {
+			const std::string displayedType = parameterType.empty() ? valueType : parameterType;
+			signature = parameterVisibility() + "parameter " + ( displayedType.empty() ? localName : displayedType + " " + localName );
+		}
+		else if( fieldProperty ) {
+			signature = modifierPrefix + kind + " " + ( valueType.empty() ? localName : valueType + " " + localName );
+		}
+		else {
+			signature = modifierPrefix + kind + " " + entityName;
+			if( genericEntity ) signature += genericSuffix( type );
+		}
 
 		HoverMetadata metadata;
 		metadata.kind = kind;
@@ -1309,7 +1320,7 @@ namespace uranite::lsp::semantic {
 				}
 				HoverMetadata metadata;
 				metadata.kind = "module";
-				metadata.signature = target.modulePath;
+				metadata.signature = "module " + target.modulePath;
 				if( filePath.empty() == false ) {
 					const std::string source = fileSourceFor( this->overlayStore.get(), filePath );
 					std::size_t packageOffset = std::string::npos;
@@ -1352,7 +1363,7 @@ namespace uranite::lsp::semantic {
 				if( this->moduleGraph->findModule( segments ).empty() == false ) {
 					HoverMetadata metadata;
 					metadata.kind = "module";
-					metadata.signature = target.modulePath + "." + target.symbolName;
+					metadata.signature = "module " + target.modulePath + "." + target.symbolName;
 					hover.contents = formatEntityHover( metadata );
 					hover.valid = true;
 					return hover;
